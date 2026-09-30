@@ -19,6 +19,7 @@ clang \
   "$ROOT_DIR/Sources/SteamGuard.m" \
   "$ROOT_DIR/Sources/SteamAccounts.m" \
   "$ROOT_DIR/Sources/AccountsKeychain.m" \
+  "$ROOT_DIR/Sources/MaFileImport.m" \
   "$ROOT_DIR/Sources/main.m" \
   -o "$MACOS_DIR/SteamGuardLite"
 

@@ -3,6 +3,8 @@
 #import "SteamAccounts.h"
 #import "AccountsKeychain.h"
 #import <Security/Security.h>
+#import "MaFileImport.h"
+#import "FolderImportFixtures.h"
 
 // test.sh renames these APIs at compile time. No real Keychain is accessed.
 static NSMutableDictionary<NSString *, NSData *> *TestKeychain;
@@ -111,6 +113,35 @@ int main(void) {
         Check(![SteamAccounts fromData:[@"{}" dataUsingEncoding:NSUTF8StringEncoding] error:NULL],
               @"invalid stored data is rejected");
 
+        NSURL *folder = FolderImportFixture();
+        SteamAccounts *original = [SteamAccounts.empty addingAccount:alice];
+        MaFileImportResult *batch = [MaFileImportResult fromFolder:folder accounts:original error:NULL];
+        Check(batch && batch.addedCount == 1 && batch.updatedCount == 2 && batch.skippedFiles.count == 2,
+              @"batch counts new accounts, repeated imports and invalid files");
+        Check(batch.accounts.accounts.count == 2 && [batch.accounts.selectedAccount.name isEqual:@"bob"],
+              @"batch adds uppercase-extension files and selects the last successful import");
+        Check([batch.accounts.accounts[0].identifier isEqual:alice.identifier] &&
+              [batch.accounts.accounts[0].secret isEqual:@"dGhpcmQgdGVzdCBzZWNyZXQ="],
+              @"batch reimport updates the existing account without duplicating it");
+        Check(original.accounts.count == 1 && [original.selectedAccount.secret isEqual:secretA],
+              @"batch candidates leave the existing collection untouched");
+        Check([batch.skippedFiles isEqual:@[@"04-broken.maFile", @"05-missing-secret.maFile"]],
+              @"skipped files are reported by filename");
+        MaFileImportResult *again = [MaFileImportResult fromFolder:folder accounts:batch.accounts error:NULL];
+        Check(again.addedCount == 0 && again.updatedCount == 3 && again.accounts.accounts.count == 2,
+              @"reimporting the folder does not add duplicates");
+        RemoveTestFolder(folder);
+
+        NSURL *empty = NewTestFolder();
+        MaFileImportResult *emptyBatch = [MaFileImportResult fromFolder:empty accounts:original error:NULL];
+        Check(emptyBatch && emptyBatch.addedCount == 0 && emptyBatch.updatedCount == 0 &&
+              emptyBatch.skippedFiles.count == 0 && emptyBatch.accounts == original,
+              @"empty folders preserve the account list");
+        RemoveTestFolder(empty);
+        NSError *folderError = nil;
+        Check(![MaFileImportResult fromFolder:empty accounts:original error:&folderError] && folderError,
+              @"missing or inaccessible folder is a reported error");
+
         TestKeychain = [NSMutableDictionary dictionary];
         Check(LoadSteamAccounts(NULL).accounts.count == 0, @"fresh install");
         TestKeychain[@"shared-secret"] = [secretA dataUsingEncoding:NSUTF8StringEncoding];
@@ -138,7 +169,7 @@ int main(void) {
         error = nil;
         Check(!LoadSteamAccounts(&error) && error && !TestKeychain[@"accounts-v1"],
               @"denied Keychain access is not treated as an empty account list");
-        NSLog(@"Steam Guard, multi-account storage and migration tests: OK");
+        NSLog(@"Steam Guard, multi-account storage, migration and folder import tests: OK");
     }
     return 0;
 }

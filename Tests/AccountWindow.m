@@ -2,9 +2,11 @@
 #define main SteamGuardApplicationMain
 #import "../Sources/main.m"
 #undef main
+#import "FolderImportFixtures.h"
 
 static SteamAccounts *SavedAccounts;
 static BOOL FailSave;
+static NSUInteger SaveCalls;
 
 SteamAccounts *LoadSteamAccounts(NSError **error) {
     (void)error;
@@ -12,6 +14,7 @@ SteamAccounts *LoadSteamAccounts(NSError **error) {
 }
 
 BOOL SaveSteamAccounts(SteamAccounts *accounts, NSError **error) {
+    SaveCalls++;
     if (FailSave) {
         if (error) *error = [NSError errorWithDomain:@"Test" code:1 userInfo:nil];
         return NO;
@@ -22,12 +25,16 @@ BOOL SaveSteamAccounts(SteamAccounts *accounts, NSError **error) {
 
 @interface TestDelegate : AppDelegate
 @property(nonatomic) NSInteger errorsShown;
+@property(nonatomic, strong) MaFileImportResult *folderResult;
 @end
 
 @implementation TestDelegate
 - (void)showError:(NSError *)error {
     (void)error;
     self.errorsShown++;
+}
+- (void)showFolderImportResult:(MaFileImportResult *)result {
+    self.folderResult = result;
 }
 @end
 
@@ -36,6 +43,14 @@ static void Check(BOOL passed, NSString *message) {
         NSLog(@"FAIL: %@", message);
         exit(1);
     }
+}
+
+static void WaitForImport(TestDelegate *delegate) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5];
+    while (delegate.importing && deadline.timeIntervalSinceNow > 0) {
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    Check(!delegate.importing, @"background import completes");
 }
 
 static SteamAccount *Fixture(NSString *name, NSString *secret, NSString *steamID) {
@@ -86,12 +101,57 @@ int main(void) {
               [delegate.accountPicker.selectedItem.representedObject isEqual:sameName.identifier],
               @"same display names do not collapse different SteamIDs in the menu");
 
+        Check(delegate.folderImportButton.action == @selector(importFolder), @"folder button is wired to importer");
+        delegate.accounts = [SteamAccounts.empty addingAccount:alice];
+        [delegate updateAccountPicker];
+        [delegate refresh];
+        NSURL *folder = FolderImportFixture();
+        SaveCalls = 0;
+        [delegate importFolderAtURL:folder];
+        Check(delegate.importing && !delegate.folderImportButton.enabled &&
+              !delegate.accountPicker.enabled && !delegate.removeButton.enabled,
+              @"bulk import prevents concurrent account edits");
+        WaitForImport(delegate);
+        Check(SaveCalls == 1 && delegate.accounts.accounts.count == 2 && delegate.folderResult &&
+              delegate.folderResult.addedCount == 1 && delegate.folderResult.updatedCount == 2,
+              @"folder import persists the whole batch once and shows its report");
+        Check(delegate.folderImportButton.enabled && delegate.accountPicker.enabled &&
+              [delegate.accountPicker.titleOfSelectedItem isEqual:@"bob"],
+              @"picker refreshes and controls unlock after batch import");
+
+        delegate.folderResult = nil;
+        SteamAccounts *beforeFailure = delegate.accounts;
+        FailSave = YES;
+        SaveCalls = 0;
+        [delegate importFolderAtURL:folder];
+        WaitForImport(delegate);
+        Check(SaveCalls == 1 && delegate.accounts == beforeFailure && !delegate.folderResult &&
+              delegate.errorsShown == 2 && delegate.folderImportButton.enabled,
+              @"failed batch save preserves all accounts and shows no success report");
+        FailSave = NO;
+        RemoveTestFolder(folder);
+
+        NSURL *emptyFolder = NewTestFolder();
+        SaveCalls = 0;
+        [delegate importFolderAtURL:emptyFolder];
+        WaitForImport(delegate);
+        Check(SaveCalls == 0 && delegate.folderResult && delegate.accounts == beforeFailure,
+              @"empty folder reports its result without a Keychain write");
+        RemoveTestFolder(emptyFolder);
+
+        delegate.folderResult = nil;
+        [delegate importFolderAtURL:emptyFolder];
+        WaitForImport(delegate);
+        Check(SaveCalls == 0 && delegate.errorsShown == 3 && !delegate.folderResult &&
+              delegate.folderImportButton.enabled && delegate.accounts == beforeFailure,
+              @"folder read errors unlock controls and preserve the account list");
+
         [delegate.window layoutIfNeeded];
         for (NSView *view in delegate.window.contentView.subviews) {
             Check(NSContainsRect(delegate.window.contentView.bounds, view.frame), @"controls fit inside the window");
         }
         [delegate.window orderOut:nil];
-        NSLog(@"Multi-account window tests: OK (synthetic data only)");
+        NSLog(@"Multi-account window and bulk import tests: OK (synthetic data only)");
     }
     return 0;
 }

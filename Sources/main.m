@@ -1,6 +1,7 @@
 #import <Cocoa/Cocoa.h>
 #import "SteamGuard.h"
 #import "AccountsKeychain.h"
+#import "MaFileImport.h"
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
@@ -9,11 +10,13 @@
 @property(nonatomic, strong) NSButton *codeCopyButton;
 @property(nonatomic, strong) NSButton *removeButton;
 @property(nonatomic, strong) NSButton *importButton;
+@property(nonatomic, strong) NSButton *folderImportButton;
 @property(nonatomic, strong) NSButton *enterButton;
 @property(nonatomic, strong) NSPopUpButton *accountPicker;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong) SteamAccounts *accounts;
 @property(nonatomic) BOOL accountsLoaded;
+@property(nonatomic) BOOL importing;
 @property(nonatomic, copy) NSString *currentCode;
 @end
 
@@ -37,6 +40,7 @@
 
 - (void)loadAccounts {
     self.importButton.enabled = NO;
+    self.folderImportButton.enabled = NO;
     self.enterButton.enabled = NO;
     self.statusLabel.stringValue = @"Загрузка аккаунтов…";
     // Keychain may ask for permission; show the window before starting a read.
@@ -57,6 +61,7 @@
             self.importButton.title = @"Импортировать .maFile…";
             self.importButton.action = @selector(importMaFile);
             self.importButton.enabled = YES;
+            self.folderImportButton.enabled = YES;
             self.enterButton.enabled = YES;
             [self updateAccountPicker];
             [self refresh];
@@ -74,7 +79,8 @@
     if (!selected) {
         self.currentCode = nil;
         self.codeLabel.stringValue = @"-----";
-        self.statusLabel.stringValue = @"Импортируйте .maFile или введите shared_secret";
+        self.statusLabel.stringValue = self.importing ? @"Импорт аккаунтов из папки…" :
+            @"Импортируйте .maFile или введите shared_secret";
         self.codeCopyButton.enabled = NO;
         self.removeButton.hidden = YES;
         return;
@@ -92,8 +98,8 @@
 
     self.currentCode = newCode;
     self.codeLabel.stringValue = newCode;
-    self.statusLabel.stringValue = [NSString stringWithFormat:@"Новый код через %ld сек.",
-                                    (long)SteamGuardSecondsRemaining(now)];
+    self.statusLabel.stringValue = self.importing ? @"Импорт аккаунтов из папки…" :
+        [NSString stringWithFormat:@"Новый код через %ld сек.", (long)SteamGuardSecondsRemaining(now)];
     self.codeCopyButton.enabled = YES;
     self.removeButton.hidden = NO;
 }
@@ -114,7 +120,7 @@
 }
 
 - (void)createWindow {
-    NSRect frame = NSMakeRect(0, 0, 400, 350);
+    NSRect frame = NSMakeRect(0, 0, 400, 390);
     self.window = [[NSWindow alloc]
         initWithContentRect:frame
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -128,12 +134,12 @@
     NSView *content = self.window.contentView;
 
     NSTextField *heading = [NSTextField labelWithString:@"Steam Guard"];
-    heading.frame = NSMakeRect(20, 302, 360, 28);
+    heading.frame = NSMakeRect(20, 342, 360, 28);
     heading.alignment = NSTextAlignmentCenter;
     heading.font = [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];
     [content addSubview:heading];
 
-    self.accountPicker = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(30, 255, 340, 32) pullsDown:NO];
+    self.accountPicker = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(30, 295, 340, 32) pullsDown:NO];
     self.accountPicker.target = self;
     self.accountPicker.action = @selector(selectAccount);
     self.accountPicker.enabled = NO;
@@ -142,33 +148,39 @@
     [content addSubview:self.accountPicker];
 
     self.codeLabel = [NSTextField labelWithString:@"-----"];
-    self.codeLabel.frame = NSMakeRect(20, 184, 360, 56);
+    self.codeLabel.frame = NSMakeRect(20, 224, 360, 56);
     self.codeLabel.alignment = NSTextAlignmentCenter;
     self.codeLabel.font = [NSFont monospacedSystemFontOfSize:42 weight:NSFontWeightSemibold];
     self.codeLabel.selectable = YES;
     [content addSubview:self.codeLabel];
 
     self.statusLabel = [NSTextField labelWithString:@""];
-    self.statusLabel.frame = NSMakeRect(20, 155, 360, 22);
+    self.statusLabel.frame = NSMakeRect(20, 195, 360, 22);
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
     [content addSubview:self.statusLabel];
 
     self.codeCopyButton = [NSButton buttonWithTitle:@"Скопировать код"
                                               target:self action:@selector(copyCode)];
-    self.codeCopyButton.frame = NSMakeRect(125, 108, 150, 34);
+    self.codeCopyButton.frame = NSMakeRect(125, 148, 150, 34);
     self.codeCopyButton.keyEquivalent = @"\r";
     [content addSubview:self.codeCopyButton];
 
     self.importButton = [NSButton buttonWithTitle:@"Импортировать .maFile…"
                                                  target:self action:@selector(importMaFile)];
-    self.importButton.frame = NSMakeRect(20, 62, 175, 32);
+    self.importButton.frame = NSMakeRect(20, 102, 175, 32);
     [content addSubview:self.importButton];
 
     self.enterButton = [NSButton buttonWithTitle:@"Ввести shared_secret…"
                                                 target:self action:@selector(enterSecret)];
-    self.enterButton.frame = NSMakeRect(205, 62, 175, 32);
+    self.enterButton.frame = NSMakeRect(205, 102, 175, 32);
     [content addSubview:self.enterButton];
+
+    self.folderImportButton = [NSButton buttonWithTitle:@"Импорт из папки…"
+                                                  target:self action:@selector(importFolder)];
+    self.folderImportButton.frame = NSMakeRect(100, 62, 200, 32);
+    self.folderImportButton.enabled = NO;
+    [content addSubview:self.folderImportButton];
 
     self.removeButton = [NSButton buttonWithTitle:@"Удалить выбранный аккаунт"
                                              target:self action:@selector(removeSecret)];
@@ -191,7 +203,7 @@
             [self.accountPicker selectItem:item];
         }
     }
-    self.accountPicker.enabled = self.accounts.accounts.count > 0;
+    self.accountPicker.enabled = self.accounts.accounts.count > 0 && !self.importing;
     if (!self.accounts.accounts.count) [self.accountPicker addItemWithTitle:@"Нет аккаунтов"];
 }
 
@@ -209,7 +221,7 @@
 }
 
 - (void)selectAccount {
-    if (!self.accountsLoaded) return;
+    if (!self.accountsLoaded || self.importing) return;
     NSString *identifier = self.accountPicker.selectedItem.representedObject;
     if (!identifier || [identifier isEqualToString:self.accounts.selectedID]) return;
     [self commitAccounts:[self.accounts selectingAccount:identifier]];
@@ -227,7 +239,7 @@
 }
 
 - (void)importMaFile {
-    if (!self.accountsLoaded) return;
+    if (!self.accountsLoaded || self.importing) return;
     [NSApp activateIgnoringOtherApps:YES];
     NSOpenPanel *panel = NSOpenPanel.openPanel;
     panel.title = @"Выберите Steam .maFile";
@@ -237,15 +249,80 @@
     if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
 
     NSError *error = nil;
-    NSData *data = [NSData dataWithContentsOfURL:panel.URL options:0 error:&error];
-    SteamAccount *account = data ? [SteamAccount accountFromMaFile:data
-        fallbackName:panel.URL.URLByDeletingPathExtension.lastPathComponent error:&error] : nil;
+    SteamAccount *account = SteamAccountFromFile(panel.URL, &error);
     if (!account) { [self showError:error]; return; }
     [self commitAccounts:[self.accounts addingAccount:account]];
 }
 
+- (void)importFolder {
+    if (!self.accountsLoaded || self.importing) return;
+    [NSApp activateIgnoringOtherApps:YES];
+    NSOpenPanel *panel = NSOpenPanel.openPanel;
+    panel.title = @"Выберите папку с .maFile";
+    panel.prompt = @"Импортировать";
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    if ([panel runModal] != NSModalResponseOK || !panel.URL) return;
+    [self importFolderAtURL:panel.URL];
+}
+
+- (void)setImportControlsEnabled:(BOOL)enabled {
+    self.importButton.enabled = enabled;
+    self.folderImportButton.enabled = enabled;
+    self.enterButton.enabled = enabled;
+    self.removeButton.enabled = enabled;
+    self.accountPicker.enabled = enabled && self.accounts.accounts.count > 0;
+}
+
+- (void)importFolderAtURL:(NSURL *)folder {
+    if (!self.accountsLoaded || self.importing) return;
+    self.importing = YES;
+    [self setImportControlsEnabled:NO];
+    self.statusLabel.stringValue = @"Импорт аккаунтов из папки…";
+    SteamAccounts *original = self.accounts;
+    // Parse in the background, then save the complete batch in one Keychain update.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSError *error = nil;
+        MaFileImportResult *result = [MaFileImportResult fromFolder:folder accounts:original error:&error];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL saved = NO;
+            if (result && result.addedCount + result.updatedCount > 0) {
+                saved = [self commitAccounts:result.accounts];
+            }
+            self.importing = NO;
+            [self setImportControlsEnabled:YES];
+            [self refresh];
+            if (!result) [self showError:error];
+            else if (saved || result.addedCount + result.updatedCount == 0) [self showFolderImportResult:result];
+        });
+    });
+}
+
+- (void)showFolderImportResult:(MaFileImportResult *)result {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Импорт из папки завершён";
+    NSMutableString *text = [NSMutableString stringWithFormat:
+        @"Добавлено аккаунтов: %lu\nОбработано повторных импортов: %lu\nПропущено файлов: %lu",
+        (unsigned long)result.addedCount, (unsigned long)result.updatedCount,
+        (unsigned long)result.skippedFiles.count];
+    if (result.addedCount + result.updatedCount + result.skippedFiles.count == 0) {
+        [text appendString:@"\n\nВ выбранной папке нет файлов .maFile. Вложенные папки не обрабатываются."];
+    } else if (result.skippedFiles.count) {
+        [text appendString:@"\n\nНе удалось прочитать или импортировать:\n"];
+        [text appendString:[[result.skippedFiles subarrayWithRange:
+            NSMakeRange(0, MIN((NSUInteger)8, result.skippedFiles.count))] componentsJoinedByString:@"\n"]];
+        if (result.skippedFiles.count > 8) [text appendFormat:@"\n…и ещё %lu",
+                                          (unsigned long)(result.skippedFiles.count - 8)];
+    }
+    alert.informativeText = text;
+    [alert addButtonWithTitle:@"OK"];
+    [NSApp activateIgnoringOtherApps:YES];
+    [alert runModal];
+}
+
 - (void)enterSecret {
-    if (!self.accountsLoaded) return;
+    if (!self.accountsLoaded || self.importing) return;
     [NSApp activateIgnoringOtherApps:YES];
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"Добавить аккаунт";
@@ -271,6 +348,7 @@
 }
 
 - (void)removeSecret {
+    if (self.importing) return;
     SteamAccount *selected = self.accounts.selectedAccount;
     if (!selected) return;
     [NSApp activateIgnoringOtherApps:YES];
