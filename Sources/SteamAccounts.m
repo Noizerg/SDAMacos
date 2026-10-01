@@ -15,6 +15,10 @@ static NSString *CleanString(id value) {
 @interface SteamAccount ()
 - (instancetype)initWithID:(NSString *)identifier name:(NSString *)name
                     secret:(NSString *)secret steamID:(NSString *)steamID;
+@property(nonatomic, readwrite, copy) NSString *identitySecret;
+@property(nonatomic, readwrite, copy) NSString *deviceID;
+@property(nonatomic, readwrite, copy) NSString *webLogin;
+@property(nonatomic, readwrite, copy) NSString *sessionID;
 @end
 
 @implementation SteamAccount
@@ -62,8 +66,39 @@ static NSString *CleanString(id value) {
     id rawID = session[@"SteamID"];
     NSString *steamID = CleanString(rawID);
     if ([rawID isKindOfClass:NSNumber.class]) steamID = [rawID stringValue];
-    // Import only the account identity and shared secret, never session tokens.
-    return [[self alloc] initWithID:account.identifier name:account.name secret:account.secret steamID:steamID];
+    SteamAccount *result = [[self alloc] initWithID:account.identifier name:account.name secret:account.secret steamID:steamID];
+    NSString *identity = CleanString(json[@"identity_secret"]);
+    if (identity && SteamGuardSecretIsValid(identity)) result.identitySecret = identity;
+    result.deviceID = CleanString(json[@"device_id"]);
+    NSString *login = CleanString(session[@"SteamLoginSecure"]);
+    NSString *token = CleanString(session[@"AccessToken"]);
+    if (!login && token && steamID) login = [NSString stringWithFormat:@"%@%%7C%%7C%@", steamID, token];
+    if (login) {
+        SteamAccount *loggedIn = [result withWebLogin:login sessionID:CleanString(session[@"SessionID"]) error:NULL];
+        if (loggedIn) result = loggedIn;
+    }
+    return result;
+}
+
+- (SteamAccount *)withWebLogin:(NSString *)login sessionID:(NSString *)sessionID error:(NSError **)error {
+    NSString *decoded = login.stringByRemovingPercentEncoding;
+    NSArray *parts = [decoded componentsSeparatedByString:@"||"];
+    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
+    BOOL numeric = parts.count == 2 && [parts[0] length] > 0 &&
+        [parts[0] rangeOfCharacterFromSet:digits.invertedSet].location == NSNotFound;
+    NSCharacterSet *unsafe = [NSCharacterSet characterSetWithCharactersInString:@";\r\n"];
+    if (!numeric || ![parts[1] length] || [login rangeOfCharacterFromSet:unsafe].location != NSNotFound ||
+        (sessionID && [sessionID rangeOfCharacterFromSet:unsafe].location != NSNotFound) ||
+        (self.steamID && ![self.steamID isEqual:parts[0]])) {
+        if (error) *error = AccountError(@"Сессия принадлежит другому аккаунту или некорректна. Войдите в выбранный аккаунт Steam.");
+        return nil;
+    }
+    SteamAccount *result = [[SteamAccount alloc] initWithID:self.identifier name:self.name secret:self.secret steamID:parts[0]];
+    result.identitySecret = self.identitySecret;
+    result.deviceID = self.deviceID;
+    result.webLogin = [NSString stringWithFormat:@"%@%%7C%%7C%@", parts[0], parts[1]];
+    result.sessionID = sessionID;
+    return result;
 }
 
 @end
@@ -118,8 +153,17 @@ static NSString *CleanString(id value) {
             return nil;
         }
         [identifiers addObject:identifier];
-        [accounts addObject:[[SteamAccount alloc] initWithID:identifier name:validated.name
-                                                     secret:validated.secret steamID:CleanString(item[@"steamID"])]];
+        SteamAccount *restored = [[SteamAccount alloc] initWithID:identifier name:validated.name
+                                                     secret:validated.secret steamID:CleanString(item[@"steamID"])];
+        NSString *identity = CleanString(item[@"identitySecret"]);
+        if (identity && SteamGuardSecretIsValid(identity)) restored.identitySecret = identity;
+        restored.deviceID = CleanString(item[@"deviceID"]);
+        NSString *login = CleanString(item[@"webLogin"]);
+        if (login) {
+            restored = [restored withWebLogin:login sessionID:CleanString(item[@"sessionID"]) error:error];
+            if (!restored) return nil;
+        }
+        [accounts addObject:restored];
     }
     return [[self alloc] initWithAccounts:accounts selectedID:CleanString(json[@"selectedID"])];
 }
@@ -130,6 +174,10 @@ static NSString *CleanString(id value) {
         NSMutableDictionary *item = [@{@"id": account.identifier, @"name": account.name,
                                        @"secret": account.secret} mutableCopy];
         if (account.steamID) item[@"steamID"] = account.steamID;
+        if (account.identitySecret) item[@"identitySecret"] = account.identitySecret;
+        if (account.deviceID) item[@"deviceID"] = account.deviceID;
+        if (account.webLogin) item[@"webLogin"] = account.webLogin;
+        if (account.sessionID) item[@"sessionID"] = account.sessionID;
         [items addObject:item];
     }
     NSMutableDictionary *json = [@{@"version": @1, @"accounts": items} mutableCopy];
@@ -155,6 +203,12 @@ static NSString *CleanString(id value) {
         SteamAccount *existing = accounts[match];
         added = [[SteamAccount alloc] initWithID:existing.identifier name:incoming.name
                                           secret:incoming.secret steamID:incoming.steamID ?: existing.steamID];
+        BOOL sameIdentity = !existing.steamID || !incoming.steamID || [existing.steamID isEqual:incoming.steamID];
+        added.identitySecret = incoming.identitySecret ?: (sameIdentity ? existing.identitySecret : nil);
+        added.deviceID = incoming.deviceID ?: (sameIdentity ? existing.deviceID : nil);
+        // Keep a working browser login on reimport; maFile sessions may be old.
+        added.webLogin = sameIdentity && existing.webLogin ? existing.webLogin : incoming.webLogin;
+        added.sessionID = sameIdentity && existing.webLogin ? existing.sessionID : incoming.sessionID;
         accounts[match] = added;
     } else {
         [accounts addObject:added];
@@ -164,6 +218,17 @@ static NSString *CleanString(id value) {
 
 - (SteamAccounts *)selectingAccount:(NSString *)identifier {
     return [[SteamAccounts alloc] initWithAccounts:self.accounts selectedID:identifier];
+}
+
+- (SteamAccounts *)replacingAccount:(SteamAccount *)account {
+    NSMutableArray *items = self.accounts.mutableCopy;
+    for (NSUInteger index = 0; index < items.count; index++) {
+        if ([[items[index] identifier] isEqual:account.identifier]) {
+            items[index] = account;
+            return [[SteamAccounts alloc] initWithAccounts:items selectedID:self.selectedID];
+        }
+    }
+    return self;
 }
 
 - (SteamAccounts *)removingSelectedAccount {

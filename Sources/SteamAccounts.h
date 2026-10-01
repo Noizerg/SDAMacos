@@ -7,6 +7,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly, copy) NSString *name;
 @property(nonatomic, readonly, copy) NSString *secret;
 @property(nonatomic, readonly, copy, nullable) NSString *steamID;
+@property(nonatomic, readonly, copy, nullable) NSString *identitySecret;
+@property(nonatomic, readonly, copy, nullable) NSString *deviceID;
+@property(nonatomic, readonly, copy, nullable) NSString *webLogin;
+@property(nonatomic, readonly, copy, nullable) NSString *sessionID;
+- (nullable SteamAccount *)withWebLogin:(NSString *)login sessionID:(nullable NSString *)sessionID error:(NSError **)error;
 + (nullable instancetype)accountFromMaFile:(NSData *)data fallbackName:(NSString *)name error:(NSError **)error;
 + (nullable instancetype)accountWithName:(NSString *)name secret:(NSString *)secret error:(NSError **)error;
 @end
@@ -21,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (SteamAccounts *)addingAccount:(SteamAccount *)account;
 - (SteamAccounts *)selectingAccount:(NSString *)identifier;
 - (SteamAccounts *)removingSelectedAccount;
+- (SteamAccounts *)replacingAccount:(SteamAccount *)account;
 @end
 
 NS_ASSUME_NONNULL_END

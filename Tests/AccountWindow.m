@@ -8,6 +8,24 @@ static SteamAccounts *SavedAccounts;
 static BOOL FailSave;
 static NSUInteger SaveCalls;
 
+@interface ConfirmationsWindow (Testing)
+- (void)reload;
+- (void)updateControls;
+@end
+
+@interface WindowConfirmationsClient : SteamConfirmations
+@property(nonatomic) NSUInteger fetchCalls;
+@end
+@implementation WindowConfirmationsClient
+- (NSArray<SteamTradeConfirmation *> *)fetchTrades:(NSError **)error {
+    (void)error;
+    self.fetchCalls++;
+    NSData *data = [@"{\"success\":true,\"conf\":[{\"type\":2,\"id\":\"100\",\"nonce\":\"200\",\"creator_id\":\"300\",\"headline\":\"Test partner\",\"summary\":[\"Send: 1 item\",\"Receive: 2 items\"]}]}"
+                   dataUsingEncoding:NSUTF8StringEncoding];
+    return [SteamConfirmations parseTrades:data error:NULL];
+}
+@end
+
 SteamAccounts *LoadSteamAccounts(NSError **error) {
     (void)error;
     return SavedAccounts ? SavedAccounts : SteamAccounts.empty;
@@ -70,7 +88,7 @@ int main(void) {
         [delegate updateAccountPicker];
         [delegate refresh];
         Check(!delegate.codeCopyButton.enabled && !delegate.accountPicker.enabled &&
-              delegate.removeButton.hidden, @"empty-state controls");
+              delegate.removeButton.hidden && !delegate.tradesButton.enabled, @"empty-state controls");
 
         SteamAccount *alice = Fixture(@"test-alice", @"MTIzNDU2Nzg5MDEyMzQ1Njc4OTA=", @"111");
         SteamAccount *bob = Fixture(@"test-bob", @"YW5vdGhlciB0ZXN0IHNlY3JldA==", @"222");
@@ -78,7 +96,7 @@ int main(void) {
         Check(delegate.accountPicker.numberOfItems == 2 && delegate.accountPicker.enabled &&
               [delegate.accountPicker.titleOfSelectedItem isEqual:@"test-bob"],
               @"picker lists both accounts and selects the imported one");
-        Check(delegate.codeCopyButton.enabled && delegate.currentCode.length == 5 &&
+        Check(delegate.codeCopyButton.enabled && delegate.tradesButton.enabled && delegate.currentCode.length == 5 &&
               !delegate.removeButton.hidden, @"code is displayed and controls enabled");
         [delegate.accountPicker selectItemAtIndex:0];
         [delegate selectAccount];
@@ -109,7 +127,7 @@ int main(void) {
         SaveCalls = 0;
         [delegate importFolderAtURL:folder];
         Check(delegate.importing && !delegate.folderImportButton.enabled &&
-              !delegate.accountPicker.enabled && !delegate.removeButton.enabled,
+              !delegate.accountPicker.enabled && !delegate.removeButton.enabled && !delegate.tradesButton.enabled,
               @"bulk import prevents concurrent account edits");
         WaitForImport(delegate);
         Check(SaveCalls == 1 && delegate.accounts.accounts.count == 2 && delegate.folderResult &&
@@ -146,12 +164,67 @@ int main(void) {
               delegate.folderImportButton.enabled && delegate.accounts == beforeFailure,
               @"folder read errors unlock controls and preserve the account list");
 
+        Check(delegate.tradesButton.action == @selector(openConfirmations), @"trade button opens confirmations for selected account");
+        ConfirmationsWindow *tradeWindow = [[ConfirmationsWindow alloc] initWithAccount:alice
+            saveSession:^BOOL(SteamAccount *account) { (void)account; return YES; }];
+        WindowConfirmationsClient *fakeClient = [[WindowConfirmationsClient alloc] initWithAccount:alice];
+        [tradeWindow setValue:fakeClient forKey:@"client"];
+        NSButton *confirmButton = [tradeWindow valueForKey:@"confirmButton"];
+        NSTableView *tradeTable = [tradeWindow valueForKey:@"table"];
+        Check(fakeClient.fetchCalls == 0 && !confirmButton.enabled && tradeTable.numberOfRows == 0,
+              @"opening the trade window performs no network request or confirmation");
+        [tradeWindow reload];
+        NSDate *tradeDeadline = [NSDate dateWithTimeIntervalSinceNow:5];
+        while ([[tradeWindow valueForKey:@"busy"] boolValue] && tradeDeadline.timeIntervalSinceNow > 0) {
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        }
+        Check(fakeClient.fetchCalls == 1 && tradeTable.numberOfRows == 1 && !confirmButton.enabled,
+              @"explicit refresh loads trades without selecting or auto-confirming them");
+        [tradeTable selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [tradeWindow tableViewSelectionDidChange:[NSNotification notificationWithName:
+            NSTableViewSelectionDidChangeNotification object:tradeTable]];
+        NSTextView *tradeDetails = [tradeWindow valueForKey:@"details"];
+        Check(confirmButton.enabled && [tradeDetails.string containsString:alice.name] &&
+              [tradeDetails.string containsString:@"300"] && [tradeDetails.string containsString:@"Send: 1 item"],
+              @"selected trade shows account, offer ID and item summary before enabling confirmation");
+        [tradeWindow setValue:@YES forKey:@"busy"];
+        [tradeWindow updateControls];
+        Check(!confirmButton.enabled && !tradeTable.enabled &&
+              ![tradeWindow.window standardWindowButton:NSWindowCloseButton].enabled,
+              @"requests disable repeat actions and closing the window mid-confirmation");
+        [tradeWindow.window layoutIfNeeded];
+        for (NSView *view in tradeWindow.window.contentView.subviews) {
+            Check(NSContainsRect(tradeWindow.window.contentView.bounds, view.frame), @"trade controls fit inside the window");
+        }
+        // Exercise the actual modal event loop, not just direct controller calls.
+        [tradeWindow setValue:@NO forKey:@"busy"];
+        __block BOOL modalFinished = NO;
+        NSDate *modalDeadline = [NSDate dateWithTimeIntervalSinceNow:5];
+        NSTimer *startReload = [NSTimer timerWithTimeInterval:0.05 repeats:NO block:^(NSTimer *timer) {
+            (void)timer;
+            [tradeWindow reload];
+        }];
+        NSTimer *finishModal = [NSTimer timerWithTimeInterval:0.02 repeats:YES block:^(NSTimer *timer) {
+            (void)timer;
+            if (fakeClient.fetchCalls >= 2 && ![[tradeWindow valueForKey:@"busy"] boolValue]) {
+                modalFinished = YES;
+                [NSApp stopModal];
+            } else if (modalDeadline.timeIntervalSinceNow <= 0) [NSApp abortModal];
+        }];
+        [NSRunLoop.mainRunLoop addTimer:startReload forMode:NSModalPanelRunLoopMode];
+        [NSRunLoop.mainRunLoop addTimer:finishModal forMode:NSModalPanelRunLoopMode];
+        [tradeWindow run];
+        [startReload invalidate];
+        [finishModal invalidate];
+        Check(modalFinished, @"background Steam responses update the actual modal trade window");
+        [tradeWindow.window orderOut:nil];
+
         [delegate.window layoutIfNeeded];
         for (NSView *view in delegate.window.contentView.subviews) {
             Check(NSContainsRect(delegate.window.contentView.bounds, view.frame), @"controls fit inside the window");
         }
         [delegate.window orderOut:nil];
-        NSLog(@"Multi-account window and bulk import tests: OK (synthetic data only)");
+        NSLog(@"Account window, bulk import and trade window tests: OK (synthetic data only)");
     }
     return 0;
 }

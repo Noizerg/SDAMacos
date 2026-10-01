@@ -2,6 +2,7 @@
 #import "SteamGuard.h"
 #import "AccountsKeychain.h"
 #import "MaFileImport.h"
+#import "ConfirmationsWindow.h"
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
@@ -12,6 +13,7 @@
 @property(nonatomic, strong) NSButton *importButton;
 @property(nonatomic, strong) NSButton *folderImportButton;
 @property(nonatomic, strong) NSButton *enterButton;
+@property(nonatomic, strong) NSButton *tradesButton;
 @property(nonatomic, strong) NSPopUpButton *accountPicker;
 @property(nonatomic, strong) NSTimer *timer;
 @property(nonatomic, strong) SteamAccounts *accounts;
@@ -42,6 +44,7 @@
     self.importButton.enabled = NO;
     self.folderImportButton.enabled = NO;
     self.enterButton.enabled = NO;
+    self.tradesButton.enabled = NO;
     self.statusLabel.stringValue = @"Загрузка аккаунтов…";
     // Keychain may ask for permission; show the window before starting a read.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -83,6 +86,7 @@
             @"Импортируйте .maFile или введите shared_secret";
         self.codeCopyButton.enabled = NO;
         self.removeButton.hidden = YES;
+        self.tradesButton.enabled = NO;
         return;
     }
 
@@ -102,6 +106,7 @@
         [NSString stringWithFormat:@"Новый код через %ld сек.", (long)SteamGuardSecondsRemaining(now)];
     self.codeCopyButton.enabled = YES;
     self.removeButton.hidden = NO;
+    self.tradesButton.enabled = !self.importing;
 }
 
 - (void)createMainMenu {
@@ -116,11 +121,20 @@
     quit.target = NSApp;
     [applicationMenu addItem:quit];
     applicationItem.submenu = applicationMenu;
+
+    NSMenuItem *editItem = [[NSMenuItem alloc] initWithTitle:@"Правка" action:nil keyEquivalent:@""];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Правка"];
+    [editMenu addItemWithTitle:@"Вырезать" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Копировать" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Вставить" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"Выбрать всё" action:@selector(selectAll:) keyEquivalent:@"a"];
+    editItem.submenu = editMenu;
+    [mainMenu addItem:editItem];
     NSApp.mainMenu = mainMenu;
 }
 
 - (void)createWindow {
-    NSRect frame = NSMakeRect(0, 0, 400, 390);
+    NSRect frame = NSMakeRect(0, 0, 400, 430);
     self.window = [[NSWindow alloc]
         initWithContentRect:frame
                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -134,12 +148,12 @@
     NSView *content = self.window.contentView;
 
     NSTextField *heading = [NSTextField labelWithString:@"Steam Guard"];
-    heading.frame = NSMakeRect(20, 342, 360, 28);
+    heading.frame = NSMakeRect(20, 382, 360, 28);
     heading.alignment = NSTextAlignmentCenter;
     heading.font = [NSFont systemFontOfSize:20 weight:NSFontWeightSemibold];
     [content addSubview:heading];
 
-    self.accountPicker = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(30, 295, 340, 32) pullsDown:NO];
+    self.accountPicker = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(30, 335, 340, 32) pullsDown:NO];
     self.accountPicker.target = self;
     self.accountPicker.action = @selector(selectAccount);
     self.accountPicker.enabled = NO;
@@ -148,39 +162,45 @@
     [content addSubview:self.accountPicker];
 
     self.codeLabel = [NSTextField labelWithString:@"-----"];
-    self.codeLabel.frame = NSMakeRect(20, 224, 360, 56);
+    self.codeLabel.frame = NSMakeRect(20, 264, 360, 56);
     self.codeLabel.alignment = NSTextAlignmentCenter;
     self.codeLabel.font = [NSFont monospacedSystemFontOfSize:42 weight:NSFontWeightSemibold];
     self.codeLabel.selectable = YES;
     [content addSubview:self.codeLabel];
 
     self.statusLabel = [NSTextField labelWithString:@""];
-    self.statusLabel.frame = NSMakeRect(20, 195, 360, 22);
+    self.statusLabel.frame = NSMakeRect(20, 235, 360, 22);
     self.statusLabel.alignment = NSTextAlignmentCenter;
     self.statusLabel.textColor = NSColor.secondaryLabelColor;
     [content addSubview:self.statusLabel];
 
     self.codeCopyButton = [NSButton buttonWithTitle:@"Скопировать код"
                                               target:self action:@selector(copyCode)];
-    self.codeCopyButton.frame = NSMakeRect(125, 148, 150, 34);
+    self.codeCopyButton.frame = NSMakeRect(125, 188, 150, 34);
     self.codeCopyButton.keyEquivalent = @"\r";
     [content addSubview:self.codeCopyButton];
 
     self.importButton = [NSButton buttonWithTitle:@"Импортировать .maFile…"
                                                  target:self action:@selector(importMaFile)];
-    self.importButton.frame = NSMakeRect(20, 102, 175, 32);
+    self.importButton.frame = NSMakeRect(20, 142, 175, 32);
     [content addSubview:self.importButton];
 
     self.enterButton = [NSButton buttonWithTitle:@"Ввести shared_secret…"
                                                 target:self action:@selector(enterSecret)];
-    self.enterButton.frame = NSMakeRect(205, 102, 175, 32);
+    self.enterButton.frame = NSMakeRect(205, 142, 175, 32);
     [content addSubview:self.enterButton];
 
     self.folderImportButton = [NSButton buttonWithTitle:@"Импорт из папки…"
                                                   target:self action:@selector(importFolder)];
-    self.folderImportButton.frame = NSMakeRect(100, 62, 200, 32);
+    self.folderImportButton.frame = NSMakeRect(100, 102, 200, 32);
     self.folderImportButton.enabled = NO;
     [content addSubview:self.folderImportButton];
+
+    self.tradesButton = [NSButton buttonWithTitle:@"Сделки выбранного аккаунта…"
+                                            target:self action:@selector(openConfirmations)];
+    self.tradesButton.frame = NSMakeRect(65, 62, 270, 32);
+    self.tradesButton.enabled = NO;
+    [content addSubview:self.tradesButton];
 
     self.removeButton = [NSButton buttonWithTitle:@"Удалить выбранный аккаунт"
                                              target:self action:@selector(removeSecret)];
@@ -272,6 +292,7 @@
     self.folderImportButton.enabled = enabled;
     self.enterButton.enabled = enabled;
     self.removeButton.enabled = enabled;
+    self.tradesButton.enabled = enabled && self.accounts.selectedAccount != nil;
     self.accountPicker.enabled = enabled && self.accounts.accounts.count > 0;
 }
 
@@ -361,6 +382,24 @@
     if ([alert runModal] != NSAlertFirstButtonReturn) return;
 
     [self commitAccounts:self.accounts.removingSelectedAccount];
+}
+
+- (void)openConfirmations {
+    SteamAccount *selected = self.accounts.selectedAccount;
+    if (!selected || !self.accountsLoaded || self.importing) return;
+    if (!selected.identitySecret || !selected.deviceID) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Нужны данные для подтверждения сделок";
+        alert.informativeText = @"Импортируйте .maFile выбранного аккаунта ещё раз. Раньше приложение сохраняло только shared_secret; для сделок нужны также identity_secret и device_id.";
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
+        return;
+    }
+    ConfirmationsWindow *controller = [[ConfirmationsWindow alloc] initWithAccount:selected
+        saveSession:^BOOL(SteamAccount *updated) {
+            return [self commitAccounts:[self.accounts replacingAccount:updated]];
+        }];
+    [controller run];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {

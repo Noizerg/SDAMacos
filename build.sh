@@ -15,11 +15,14 @@ clang \
   -mmacosx-version-min=13.0 \
   -framework Cocoa \
   -framework Security \
+  -framework WebKit \
   -I "$ROOT_DIR/Sources" \
   "$ROOT_DIR/Sources/SteamGuard.m" \
   "$ROOT_DIR/Sources/SteamAccounts.m" \
   "$ROOT_DIR/Sources/AccountsKeychain.m" \
   "$ROOT_DIR/Sources/MaFileImport.m" \
+  "$ROOT_DIR/Sources/SteamConfirmations.m" \
+  "$ROOT_DIR/Sources/ConfirmationsWindow.m" \
   "$ROOT_DIR/Sources/main.m" \
   -o "$MACOS_DIR/SteamGuardLite"
 
